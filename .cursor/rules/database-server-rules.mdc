@@ -1,0 +1,614 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Database Server Specific Development Rules
+
+## Core Database Operations
+
+### Async Database Operations
+```python
+import asyncio
+import aiosqlite
+from typing import Dict, Any, List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DatabaseConnection:
+    """Async database connection manager"""
+    
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.connection: Optional[aiosqlite.Connection] = None
+    
+    async def connect(self) -> None:
+        """Establish database connection"""
+        try:
+            self.connection = await aiosqlite.connect(self.db_path)
+            await self.connection.execute("PRAGMA foreign_keys = ON")
+            await self.connection.commit()
+            logger.info(f"Connected to database: {self.db_path}")
+        except Exception as e:
+            logger.error(f"Database connection error: {e}")
+            raise
+    
+    async def disconnect(self) -> None:
+        """Close database connection"""
+        if self.connection:
+            await self.connection.close()
+            self.connection = None
+            logger.info("Database connection closed")
+```
+
+### SQL Query Security
+```python
+import re
+from typing import Dict, Any, List
+
+# Dangerous SQL patterns to detect
+DANGEROUS_PATTERNS = [
+    r'\b(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE)\b',
+    r';\s*--',  # SQL injection comments
+    r'\bUNION\b.*\bSELECT\b',
+    r'\bEXEC\b|\bEXECUTE\b',
+    r'\bxp_cmdshell\b',
+    r'\bsp_\w+\b'
+]
+
+def validate_sql_query(query: str, allowed_operations: List[str] = None) -> bool:
+    """Validate SQL query for security"""
+    if not allowed_operations:
+        allowed_operations = ['SELECT']
+    
+    # Check for dangerous patterns
+    for pattern in DANGEROUS_PATTERNS:
+        if re.search(pattern, query, re.IGNORECASE):
+            first_word = query.strip().split()[0].upper()
+            if first_word not in allowed_operations:
+                raise ValueError(f"Dangerous SQL operation detected: {first_word}")
+    
+    return True
+
+def sanitize_sql_input(value: Any) -> str:
+    """Sanitize SQL input to prevent injection"""
+    if isinstance(value, str):
+        # Remove SQL special characters
+        sanitized = re.sub(r'[^\w\s.-]', '', value)
+        return sanitized
+    return str(value)
+```
+
+### Query Parameter Validation
+```python
+from pydantic import BaseModel, validator
+from typing import Optional, Union, Dict, Any
+
+class QueryParams(BaseModel):
+    """Validate database query parameters"""
+    table: str
+    columns: Optional[str] = "*"
+    where: Optional[str] = None
+    limit: Optional[int] = 100
+    offset: Optional[int] = 0
+    order_by: Optional[str] = None
+    
+    @validator('table')
+    def validate_table_name(cls, v):
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', v):
+            raise ValueError('Invalid table name')
+        return v
+    
+    @validator('columns')
+    def validate_columns(cls, v):
+        if v != "*":
+            # Validate column names
+            columns = [col.strip() for col in v.split(',')]
+            for col in columns:
+                if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', col):
+                    raise ValueError(f'Invalid column name: {col}')
+        return v
+    
+    @validator('limit')
+    def validate_limit(cls, v):
+        if v is not None and (v < 1 or v > 1000):
+            raise ValueError('Limit must be between 1 and 1000')
+        return v
+```
+
+## Database Tools Implementation
+
+### Query Tool
+```python
+from dataclasses import dataclass
+from typing import Dict, Any, List, Optional
+
+@dataclass
+class DatabaseQueryTool:
+    name: str = "db_query"
+    description: str = "Execute a database query"
+    parameters: Dict[str, Any] = field(default_factory=lambda: {
+        "type": "object",
+        "properties": {
+            "table": {"type": "string", "description": "Table name"},
+            "columns": {"type": "string", "default": "*", "description": "Columns to select"},
+            "where": {"type": "string", "description": "WHERE clause"},
+            "limit": {"type": "integer", "default": 100, "description": "Result limit"},
+            "offset": {"type": "integer", "default": 0, "description": "Result offset"}
+        },
+        "required": ["table"]
+    })
+    
+    def __init__(self, db_connection: DatabaseConnection):
+        self.db_connection = db_connection
+    
+    async def handle(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle database query request"""
+        try:
+            # Validate parameters
+            params = QueryParams(**request)
+            
+            # Build query
+            query = self._build_select_query(params)
+            
+            # Execute query
+            async with self.db_connection.connection.execute(query) as cursor:
+                rows = await cursor.fetchall()
+                columns = [desc[0] for desc in cursor.description]
+            
+            # Format results
+            results = []
+            for row in rows:
+                results.append(dict(zip(columns, row)))
+            
+            return {
+                "status": "success",
+                "data": {
+                    "query": query,
+                    "results": results,
+                    "count": len(results)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Database query error: {e}")
+            return {"status": "error", "error": str(e)}
+    
+    def _build_select_query(self, params: QueryParams) -> str:
+        """Build SELECT query from parameters"""
+        query = f"SELECT {params.columns} FROM {params.table}"
+        
+        if params.where:
+            query += f" WHERE {params.where}"
+        
+        if params.order_by:
+            query += f" ORDER BY {params.order_by}"
+        
+        if params.limit:
+            query += f" LIMIT {params.limit}"
+        
+        if params.offset:
+            query += f" OFFSET {params.offset}"
+        
+        return query
+```
+
+### Table Schema Tool
+```python
+async def get_table_schema_tool(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Get table schema information"""
+    try:
+        table_name = request.get("table")
+        if not table_name:
+            raise ValueError("Table name is required")
+        
+        # Validate table name
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', table_name):
+            raise ValueError("Invalid table name")
+        
+        # Get table schema
+        schema_query = f"PRAGMA table_info({table_name})"
+        
+        async with db_connection.connection.execute(schema_query) as cursor:
+            schema_rows = await cursor.fetchall()
+        
+        if not schema_rows:
+            raise ValueError(f"Table '{table_name}' not found")
+        
+        # Format schema information
+        columns = []
+        for row in schema_rows:
+            columns.append({
+                "name": row[1],
+                "type": row[2],
+                "not_null": bool(row[3]),
+                "default_value": row[4],
+                "primary_key": bool(row[5])
+            })
+        
+        return {
+            "status": "success",
+            "data": {
+                "table": table_name,
+                "columns": columns,
+                "column_count": len(columns)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Schema query error: {e}")
+        return {"status": "error", "error": str(e)}
+```
+
+### Database Statistics Tool
+```python
+async def get_database_stats_tool(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Get database statistics"""
+    try:
+        # Get all tables
+        tables_query = "SELECT name FROM sqlite_master WHERE type='table'"
+        async with db_connection.connection.execute(tables_query) as cursor:
+            tables = await cursor.fetchall()
+        
+        table_stats = []
+        for table_row in tables:
+            table_name = table_row[0]
+            
+            # Get row count
+            count_query = f"SELECT COUNT(*) FROM {table_name}"
+            async with db_connection.connection.execute(count_query) as cursor:
+                count_result = await cursor.fetchone()
+                row_count = count_result[0] if count_result else 0
+            
+            table_stats.append({
+                "table": table_name,
+                "row_count": row_count
+            })
+        
+        return {
+            "status": "success",
+            "data": {
+                "total_tables": len(tables),
+                "tables": table_stats
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Database stats error: {e}")
+        return {"status": "error", "error": str(e)}
+```
+
+## Database Server Specific Requirements
+
+### Connection Management
+```python
+import asyncio
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+class DatabasePool:
+    """Database connection pool manager"""
+    
+    def __init__(self, db_path: str, max_connections: int = 10):
+        self.db_path = db_path
+        self.max_connections = max_connections
+        self.pool: List[DatabaseConnection] = []
+        self.semaphore = asyncio.Semaphore(max_connections)
+    
+    async def initialize(self) -> None:
+        """Initialize connection pool"""
+        for _ in range(self.max_connections):
+            conn = DatabaseConnection(self.db_path)
+            await conn.connect()
+            self.pool.append(conn)
+        
+        logger.info(f"Database pool initialized with {self.max_connections} connections")
+    
+    @asynccontextmanager
+    async def get_connection(self) -> AsyncGenerator[DatabaseConnection, None]:
+        """Get connection from pool"""
+        async with self.semaphore:
+            if not self.pool:
+                raise RuntimeError("No database connections available")
+            
+            conn = self.pool.pop()
+            try:
+                yield conn
+            finally:
+                self.pool.append(conn)
+```
+
+### Transaction Management
+```python
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def database_transaction(connection: DatabaseConnection):
+    """Manage database transactions"""
+    try:
+        await connection.connection.execute("BEGIN")
+        yield connection
+        await connection.connection.commit()
+        logger.info("Transaction committed")
+    except Exception as e:
+        await connection.connection.rollback()
+        logger.error(f"Transaction rolled back: {e}")
+        raise
+```
+
+### Data Validation
+```python
+from typing import Any, Dict, List
+import json
+
+def validate_json_data(data: Any) -> Dict[str, Any]:
+    """Validate JSON data for database storage"""
+    if isinstance(data, str):
+        try:
+            parsed_data = json.loads(data)
+        except json.JSONDecodeError:
+            raise ValueError("Invalid JSON format")
+    elif isinstance(data, dict):
+        parsed_data = data
+    else:
+        raise ValueError("Data must be JSON string or dictionary")
+    
+    # Validate data size
+    json_str = json.dumps(parsed_data)
+    if len(json_str) > 1024 * 1024:  # 1MB limit
+        raise ValueError("JSON data too large (max 1MB)")
+    
+    return parsed_data
+```
+
+## Security Requirements
+
+### Query Logging and Auditing
+```python
+import logging
+from datetime import datetime
+from typing import Dict, Any
+
+audit_logger = logging.getLogger('db_server.audit')
+
+async def log_database_operation(
+    operation: str,
+    table: str,
+    query: str,
+    user: str = "system",
+    success: bool = True,
+    affected_rows: int = 0
+):
+    """Log database operations for audit"""
+    audit_logger.info(
+        f"DB Operation: {operation} | "
+        f"Table: {table} | "
+        f"User: {user} | "
+        f"Success: {success} | "
+        f"Affected Rows: {affected_rows} | "
+        f"Query: {query[:100]}... | "
+        f"Timestamp: {datetime.now().isoformat()}"
+    )
+```
+
+### Access Control
+```python
+from enum import Enum
+from typing import List, Dict, Set
+
+class DatabasePermission(Enum):
+    READ = "read"
+    WRITE = "write"
+    ADMIN = "admin"
+
+class DatabaseAccessControl:
+    """Database access control manager"""
+    
+    def __init__(self):
+        self.user_permissions: Dict[str, Set[DatabasePermission]] = {}
+        self.table_permissions: Dict[str, Set[DatabasePermission]] = {}
+    
+    def grant_permission(self, user: str, permission: DatabasePermission) -> None:
+        """Grant permission to user"""
+        if user not in self.user_permissions:
+            self.user_permissions[user] = set()
+        self.user_permissions[user].add(permission)
+    
+    def check_permission(self, user: str, permission: DatabasePermission) -> bool:
+        """Check if user has permission"""
+        user_perms = self.user_permissions.get(user, set())
+        return permission in user_perms or DatabasePermission.ADMIN in user_perms
+```
+
+## Performance Considerations
+
+### Query Optimization
+```python
+async def analyze_query_performance(query: str, connection: DatabaseConnection) -> Dict[str, Any]:
+    """Analyze query performance"""
+    try:
+        # Use EXPLAIN QUERY PLAN
+        explain_query = f"EXPLAIN QUERY PLAN {query}"
+        
+        async with connection.connection.execute(explain_query) as cursor:
+            plan_rows = await cursor.fetchall()
+        
+        # Format execution plan
+        execution_plan = []
+        for row in plan_rows:
+            execution_plan.append({
+                "id": row[0],
+                "parent": row[1],
+                "detail": row[3]
+            })
+        
+        return {
+            "status": "success",
+            "data": {
+                "query": query,
+                "execution_plan": execution_plan
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Query analysis error: {e}")
+        return {"status": "error", "error": str(e)}
+```
+
+### Database Maintenance
+```python
+async def vacuum_database(connection: DatabaseConnection) -> Dict[str, Any]:
+    """Vacuum database to reclaim space"""
+    try:
+        await connection.connection.execute("VACUUM")
+        await connection.connection.commit()
+        
+        return {
+            "status": "success",
+            "message": "Database vacuumed successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Database vacuum error: {e}")
+        return {"status": "error", "error": str(e)}
+```
+
+## Testing Requirements
+
+### Database Server Tests
+```python
+import pytest
+import tempfile
+import aiosqlite
+from pathlib import Path
+
+@pytest.fixture
+async def temp_database():
+    """Create temporary database for testing"""
+    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp_file:
+        db_path = tmp_file.name
+    
+    # Initialize test database
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute("""
+            CREATE TABLE test_table (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                value TEXT
+            )
+        """)
+        await conn.execute("""
+            INSERT INTO test_table (name, value) VALUES 
+            ('test1', 'value1'),
+            ('test2', 'value2')
+        """)
+        await conn.commit()
+    
+    yield db_path
+    
+    # Cleanup
+    Path(db_path).unlink()
+
+@pytest.mark.asyncio
+async def test_database_query_tool(temp_database):
+    """Test database query functionality"""
+    db_conn = DatabaseConnection(temp_database)
+    await db_conn.connect()
+    
+    tool = DatabaseQueryTool(db_conn)
+    
+    # Test successful query
+    request = {
+        "table": "test_table",
+        "columns": "id, name",
+        "limit": 10
+    }
+    
+    result = await tool.handle(request)
+    
+    assert result["status"] == "success"
+    assert len(result["data"]["results"]) == 2
+    assert result["data"]["results"][0]["name"] == "test1"
+    
+    await db_conn.disconnect()
+
+@pytest.mark.asyncio
+async def test_sql_injection_prevention():
+    """Test SQL injection prevention"""
+    malicious_query = "SELECT * FROM users; DROP TABLE users; --"
+    
+    with pytest.raises(ValueError, match="Dangerous SQL operation"):
+        validate_sql_query(malicious_query)
+```
+
+## Database Server Specific TODO Template
+
+When working on database server features, always include these items in TODO.md:
+
+```markdown
+## Database Server TODO
+
+### Core Features
+- [ ] Database connection management
+- [ ] Basic query execution
+- [ ] Schema introspection
+- [ ] Transaction support
+- [ ] Connection pooling
+
+### Security Checklist
+- [ ] SQL injection prevention
+- [ ] Query validation
+- [ ] Access control implementation
+- [ ] Audit logging active
+- [ ] Input sanitization
+
+### Performance Items
+- [ ] Query optimization
+- [ ] Connection pooling
+- [ ] Database indexing
+- [ ] Query caching
+- [ ] Performance monitoring
+
+### Testing Requirements
+- [ ] Unit tests for all database operations
+- [ ] Security tests for SQL injection
+- [ ] Performance tests for large datasets
+- [ ] Integration tests with real database
+- [ ] Error handling tests
+```
+
+## Database Backup and Recovery
+
+### Backup Operations
+```python
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+async def backup_database(source_path: str, backup_dir: str) -> Dict[str, Any]:
+    """Create database backup"""
+    try:
+        backup_dir_path = Path(backup_dir)
+        backup_dir_path.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"backup_{timestamp}.db"
+        backup_path = backup_dir_path / backup_filename
+        
+        # Copy database file
+        shutil.copy2(source_path, backup_path)
+        
+        return {
+            "status": "success",
+            "data": {
+                "backup_path": str(backup_path),
+                "backup_size": backup_path.stat().st_size,
+                "created_at": timestamp
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Database backup error: {e}")
+        return {"status": "error", "error": str(e)}
+```

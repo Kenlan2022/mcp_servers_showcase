@@ -1,0 +1,417 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+---
+type: auto-attached
+name: "File Server Specific Rules"
+description: "Rules specific to file server development"
+glob: "servers/file-server/**/*"
+---
+
+# File Server Specific Development Rules
+
+## Core File Operations
+
+### Async File Operations
+```python
+import aiofiles
+import aiofiles.os
+from pathlib import Path
+
+async def read_file_safely(file_path: str) -> bytes:
+    """Always use async file operations"""
+    try:
+        async with aiofiles.open(file_path, 'rb') as f:
+            return await f.read()
+    except FileNotFoundError:
+        raise ValueError(f"File not found: {file_path}")
+    except PermissionError:
+        raise ValueError(f"Permission denied: {file_path}")
+```
+
+### File Path Security
+```python
+from pathlib import Path
+import os
+
+def validate_file_path(file_path: str, base_dir: str) -> Path:
+    """Prevent directory traversal attacks"""
+    # Resolve path and ensure it's within base directory
+    resolved_path = Path(base_dir).resolve() / Path(file_path).name
+    
+    if not str(resolved_path).startswith(str(Path(base_dir).resolve())):
+        raise ValueError("Invalid file path: directory traversal detected")
+    
+    return resolved_path
+```
+
+## File Operations Standards
+
+### File Type Validation
+```python
+import mimetypes
+from typing import List
+
+ALLOWED_MIME_TYPES = [
+    'text/plain',
+    'text/csv',
+    'application/json',
+    'application/pdf',
+    'image/png',
+    'image/jpeg'
+]
+
+def validate_file_type(file_path: str, allowed_types: List[str] = ALLOWED_MIME_TYPES) -> bool:
+    """Validate file type before processing"""
+    mime_type, _ = mimetypes.guess_type(file_path)
+    return mime_type in allowed_types
+```
+
+### File Size Limits
+```python
+import os
+from typing import Optional
+
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+async def check_file_size(file_path: str, max_size: Optional[int] = None) -> None:
+    """Check file size before processing"""
+    max_size = max_size or MAX_FILE_SIZE
+    file_size = await aiofiles.os.path.getsize(file_path)
+    
+    if file_size > max_size:
+        raise ValueError(f"File too large: {file_size} bytes (max: {max_size})")
+```
+
+## File Server Tools Implementation
+
+### File Reading Tool
+```python
+@dataclass
+class FileReadTool(MCPTool):
+    name: str = "read_file"
+    description: str = "Read content from a file"
+    parameters: Dict[str, Any] = field(default_factory=lambda: {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Path to the file to read"},
+            "encoding": {"type": "string", "default": "utf-8", "description": "File encoding"}
+        },
+        "required": ["file_path"]
+    })
+    
+    async def handle(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle file read request"""
+        try:
+            file_path = request.get("file_path")
+            encoding = request.get("encoding", "utf-8")
+            
+            # Validate path
+            safe_path = validate_file_path(file_path, self.base_dir)
+            
+            # Check file size
+            await check_file_size(str(safe_path))
+            
+            # Validate file type
+            if not validate_file_type(str(safe_path)):
+                raise ValueError("File type not allowed")
+            
+            # Read file
+            async with aiofiles.open(safe_path, 'r', encoding=encoding) as f:
+                content = await f.read()
+            
+            return {
+                "status": "success",
+                "data": {
+                    "content": content,
+                    "file_path": str(safe_path),
+                    "size": len(content)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"File read error: {e}")
+            return {"status": "error", "error": str(e)}
+```
+
+### File Writing Tool
+```python
+async def write_file_tool(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Write content to a file"""
+    try:
+        file_path = request.get("file_path")
+        content = request.get("content")
+        encoding = request.get("encoding", "utf-8")
+        
+        # Validate inputs
+        if not file_path or content is None:
+            raise ValueError("file_path and content are required")
+        
+        # Validate path
+        safe_path = validate_file_path(file_path, BASE_DIR)
+        
+        # Check content size
+        if len(content.encode(encoding)) > MAX_FILE_SIZE:
+            raise ValueError("Content too large")
+        
+        # Create directory if needed
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write file
+        async with aiofiles.open(safe_path, 'w', encoding=encoding) as f:
+            await f.write(content)
+        
+        return {
+            "status": "success",
+            "data": {
+                "file_path": str(safe_path),
+                "size": len(content)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"File write error: {e}")
+        return {"status": "error", "error": str(e)}
+```
+
+## File Server Specific Requirements
+
+### Directory Operations
+```python
+async def list_directory_tool(request: Dict[str, Any]) -> Dict[str, Any]:
+    """List directory contents"""
+    try:
+        dir_path = request.get("directory_path", ".")
+        
+        # Validate path
+        safe_path = validate_file_path(dir_path, BASE_DIR)
+        
+        if not safe_path.is_dir():
+            raise ValueError("Path is not a directory")
+        
+        # List contents
+        contents = []
+        async for item in aiofiles.os.listdir(safe_path):
+            item_path = safe_path / item
+            is_dir = await aiofiles.os.path.isdir(item_path)
+            size = await aiofiles.os.path.getsize(item_path) if not is_dir else 0
+            
+            contents.append({
+                "name": item,
+                "type": "directory" if is_dir else "file",
+                "size": size
+            })
+        
+        return {
+            "status": "success",
+            "data": {
+                "directory": str(safe_path),
+                "contents": contents
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Directory list error: {e}")
+        return {"status": "error", "error": str(e)}
+```
+
+### File Metadata
+```python
+async def get_file_info_tool(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Get file metadata"""
+    try:
+        file_path = request.get("file_path")
+        
+        # Validate path
+        safe_path = validate_file_path(file_path, BASE_DIR)
+        
+        if not safe_path.exists():
+            raise ValueError("File does not exist")
+        
+        # Get metadata
+        stat = await aiofiles.os.stat(safe_path)
+        mime_type, _ = mimetypes.guess_type(str(safe_path))
+        
+        return {
+            "status": "success",
+            "data": {
+                "file_path": str(safe_path),
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+                "mime_type": mime_type,
+                "is_directory": safe_path.is_dir()
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"File info error: {e}")
+        return {"status": "error", "error": str(e)}
+```
+
+## Security Requirements
+
+### File Access Control
+```python
+class FileAccessControl:
+    def __init__(self, base_dir: str, allowed_extensions: List[str] = None):
+        self.base_dir = Path(base_dir).resolve()
+        self.allowed_extensions = allowed_extensions or ['.txt', '.json', '.csv', '.md']
+    
+    def is_allowed_path(self, file_path: str) -> bool:
+        """Check if file path is allowed"""
+        try:
+            resolved_path = self.base_dir / Path(file_path).name
+            
+            # Check if within base directory
+            if not str(resolved_path).startswith(str(self.base_dir)):
+                return False
+            
+            # Check file extension
+            if resolved_path.suffix.lower() not in self.allowed_extensions:
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
+```
+
+### Audit Logging
+```python
+import logging
+from datetime import datetime
+
+audit_logger = logging.getLogger('file_server.audit')
+
+async def log_file_operation(operation: str, file_path: str, user: str = "system", success: bool = True):
+    """Log all file operations for audit"""
+    audit_logger.info(
+        f"File operation: {operation} | "
+        f"File: {file_path} | "
+        f"User: {user} | "
+        f"Success: {success} | "
+        f"Timestamp: {datetime.now().isoformat()}"
+    )
+```
+
+## Performance Considerations
+
+### File Streaming
+```python
+async def stream_file_tool(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Stream large files in chunks"""
+    try:
+        file_path = request.get("file_path")
+        chunk_size = request.get("chunk_size", 8192)
+        
+        # Validate path
+        safe_path = validate_file_path(file_path, BASE_DIR)
+        
+        chunks = []
+        async with aiofiles.open(safe_path, 'rb') as f:
+            while True:
+                chunk = await f.read(chunk_size)
+                if not chunk:
+                    break
+                chunks.append(chunk.decode('utf-8', errors='ignore'))
+        
+        return {
+            "status": "success",
+            "data": {
+                "file_path": str(safe_path),
+                "chunks": chunks,
+                "total_chunks": len(chunks)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"File streaming error: {e}")
+        return {"status": "error", "error": str(e)}
+```
+
+### Caching Strategy
+```python
+from functools import lru_cache
+import hashlib
+
+@lru_cache(maxsize=128)
+def get_file_hash(file_path: str) -> str:
+    """Cache file hashes for change detection"""
+    with open(file_path, 'rb') as f:
+        return hashlib.md5(f.read()).hexdigest()
+```
+
+## Testing Requirements
+
+### File Server Tests
+```python
+import tempfile
+import pytest
+from pathlib import Path
+
+@pytest.fixture
+def temp_dir():
+    """Create temporary directory for tests"""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        yield Path(tmp_dir)
+@pytest.mark.asyncio
+async def test_file_read_tool(temp_dir):
+    """Test file reading functionality"""
+    # Create test file
+    test_file = temp_dir / "test.txt"
+    test_content = "Hello, World!"
+    
+    async with aiofiles.open(test_file, 'w') as f:
+        await f.write(test_content)
+    
+    # Test reading
+    request = {"file_path": str(test_file)}
+    result = await file_read_tool(request)
+    
+    assert result["status"] == "success"
+    assert result["data"]["content"] == test_content
+
+@pytest.mark.asyncio
+async def test_file_security(temp_dir):
+    """Test security measures"""
+    # Test directory traversal prevention
+    malicious_path = "../../etc/passwd"
+    
+    with pytest.raises(ValueError, match="directory traversal"):
+        validate_file_path(malicious_path, str(temp_dir))
+```
+
+## File Server Specific TODO Template
+
+When working on file server features, always include these items in TODO.md:
+
+```markdown
+## File Server TODO
+
+### Current Features
+- [ ] Basic file read/write operations
+- [ ] Directory listing
+- [ ] File metadata retrieval
+- [ ] File streaming for large files
+
+### Security Checklist
+- [ ] Path validation implemented
+- [ ] File type restrictions in place
+- [ ] Size limits enforced
+- [ ] Access control configured
+- [ ] Audit logging active
+
+### Performance Items
+- [ ] File caching implemented
+- [ ] Streaming for large files
+- [ ] Async operations used
+- [ ] Memory usage optimized
+
+### Testing Requirements
+- [ ] Unit tests for all file operations
+- [ ] Security tests for path validation
+- [ ] Performance tests for large files
+- [ ] Error handling tests
+```

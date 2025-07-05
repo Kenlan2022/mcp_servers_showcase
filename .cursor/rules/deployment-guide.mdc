@@ -1,0 +1,448 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# MCP Server Deployment Guide
+
+## Pre-deployment Checklist
+
+### Code Quality Check
+- [ ] All tests passing (`uv run pytest`)
+- [ ] Code formatted (`uv run black .`)
+- [ ] Imports sorted (`uv run isort .`)
+- [ ] Type checking passes (`uv run mypy .`)
+- [ ] Linting passes (`uv run ruff check .`)
+- [ ] No TODO comments remain in code
+- [ ] All security vulnerabilities addressed
+
+### Documentation Check
+- [ ] README.md updated with current functionality
+- [ ] API documentation complete
+- [ ] Configuration options documented
+- [ ] Usage examples provided
+- [ ] TODO.md reflects actual state
+
+### Configuration Validation
+- [ ] Environment variables documented
+- [ ] Configuration file templates provided
+- [ ] Default values are secure
+- [ ] Sensitive data properly handled
+- [ ] Connection strings validated
+
+## Deployment Process
+
+### Step 1: Environment Setup
+
+```bash
+# Create deployment directory
+mkdir -p /opt/mcp-servers
+cd /opt/mcp-servers
+
+# Clone repository
+git clone <repository-url> .
+git checkout <release-tag>
+
+# Setup Python environment with UV
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+### Step 2: Configuration
+
+```bash
+# Copy configuration template
+cp config.template.toml config.toml
+
+# Edit configuration
+nano config.toml
+```
+
+**Configuration Template:**
+```toml
+[server]
+host = "0.0.0.0"
+port = 8000
+debug = false
+workers = 4
+
+[database]
+path = "/data/mcp_servers.db"
+max_connections = 20
+backup_interval = 3600  # seconds
+
+[file_server]
+base_directory = "/data/files"
+max_file_size = 10485760  # 10MB
+allowed_extensions = [".txt", ".json", ".csv", ".md"]
+
+[logging]
+level = "INFO"
+file = "/var/log/mcp-servers.log"
+rotate_size = 10485760  # 10MB
+backup_count = 5
+```
+
+### Step 3: Database Setup
+
+```bash
+# Create database directory
+mkdir -p /data
+chmod 750 /data
+
+# Initialize database (if needed)
+uv run python -c "
+import asyncio
+from servers.db_server.database import initialize_database
+asyncio.run(initialize_database('/data/mcp_servers.db'))
+"
+```
+
+### Step 4: File Server Setup
+
+```bash
+# Create file server directory
+mkdir -p /data/files
+chmod 750 /data/files
+
+# Set proper ownership
+chown -R mcp-user:mcp-group /data
+```
+
+### Step 5: Service Setup
+
+**systemd Service File** (`/etc/systemd/system/mcp-servers.service`):
+```ini
+[Unit]
+Description=MCP Servers
+After=network.target
+
+[Service]
+Type=simple
+User=mcp-user
+Group=mcp-group
+WorkingDirectory=/opt/mcp-servers
+Environment=PATH=/opt/mcp-servers/.venv/bin
+ExecStart=/opt/mcp-servers/.venv/bin/python -m servers.main
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-servers
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/data /var/log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Step 6: Service Management
+
+```bash
+# Enable and start service
+sudo systemctl daemon-reload
+sudo systemctl enable mcp-servers
+sudo systemctl start mcp-servers
+
+# Check status
+sudo systemctl status mcp-servers
+```
+
+## Monitoring and Logging
+
+### Log Management
+
+```bash
+# View logs
+sudo journalctl -u mcp-servers -f
+
+# Check application logs
+tail -f /var/log/mcp-servers.log
+
+# Log rotation (automated by systemd)
+sudo systemctl restart rsyslog
+```
+
+### Health Checks
+
+```bash
+# Check server health
+curl -f http://localhost:8000/health || echo "Server not responding"
+
+# Check database connectivity
+uv run python -c "
+import asyncio
+from servers.db_server.database import health_check
+asyncio.run(health_check())
+"
+
+# Check file server accessibility
+curl -f http://localhost:8000/files/health || echo "File server not responding"
+```
+
+### Performance Monitoring
+
+```bash
+# Check resource usage
+top -p $(pgrep -f "python -m servers.main")
+
+# Check database size
+du -h /data/mcp_servers.db
+
+# Check file server storage
+df -h /data/files
+```
+
+## Backup Procedures
+
+### Database Backup
+
+```bash
+# Manual backup
+uv run python -c "
+import asyncio
+from servers.db_server.backup import backup_database
+asyncio.run(backup_database('/data/mcp_servers.db', '/backups/db'))
+"
+
+# Automated backup script
+cat > /usr/local/bin/backup-mcp-db.sh << 'EOF'
+#!/bin/bash
+cd /opt/mcp-servers
+source .venv/bin/activate
+python -c "
+import asyncio
+from datetime import datetime
+from servers.db_server.backup import backup_database
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+asyncio.run(backup_database('/data/mcp_servers.db', f'/backups/db/{timestamp}'))
+"
+EOF
+
+chmod +x /usr/local/bin/backup-mcp-db.sh
+```
+
+### File Server Backup
+
+```bash
+# Backup files using rsync
+rsync -av --delete /data/files/ /backups/files/
+```
+
+### Automated Backup (Cron)
+
+```bash
+# Add to crontab
+crontab -e
+
+# Add these lines:
+# Database backup every 6 hours
+0 */6 * * * /usr/local/bin/backup-mcp-db.sh
+
+# File backup daily at 2 AM
+0 2 * * * rsync -av --delete /data/files/ /backups/files/
+```
+
+## Security Hardening
+
+### Network Security
+
+```bash
+# Configure firewall
+sudo ufw allow 8000/tcp comment "MCP Servers"
+sudo ufw enable
+
+# Or use specific IP ranges
+sudo ufw allow from 192.168.1.0/24 to any port 8000
+```
+
+### SSL/TLS Configuration
+
+```nginx
+# Nginx proxy configuration
+server {
+    listen 80;
+    server_name mcp-server.example.com;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name mcp-server.example.com;
+    
+    ssl_certificate /etc/ssl/certs/mcp-server.crt;
+    ssl_certificate_key /etc/ssl/private/mcp-server.key;
+    
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**Service won't start:**
+```bash
+# Check logs
+sudo journalctl -u mcp-servers --no-pager
+
+# Check configuration
+uv run python -c "
+from servers.config import load_config
+config = load_config()
+print('Configuration loaded successfully')
+"
+```
+
+**Database connection issues:**
+```bash
+# Check database file permissions
+ls -la /data/mcp_servers.db
+
+# Test database connectivity
+uv run python -c "
+import asyncio
+import aiosqlite
+async def test():
+    async with aiosqlite.connect('/data/mcp_servers.db') as conn:
+        await conn.execute('SELECT 1')
+        print('Database connection successful')
+asyncio.run(test())
+"
+```
+
+**File server issues:**
+```bash
+# Check directory permissions
+ls -la /data/files
+
+# Test file operations
+touch /data/files/test.txt
+rm /data/files/test.txt
+```
+
+## Rollback Procedures
+
+### Emergency Rollback
+
+```bash
+# Stop service
+sudo systemctl stop mcp-servers
+
+# Restore database from backup
+cp /backups/db/latest/mcp_servers.db /data/mcp_servers.db
+
+# Restore files from backup
+rsync -av --delete /backups/files/ /data/files/
+
+# Revert to previous version
+git checkout <previous-tag>
+uv pip install -r requirements.txt
+
+# Start service
+sudo systemctl start mcp-servers
+```
+
+## Performance Optimization
+
+### Database Optimization
+
+```bash
+# Vacuum database
+uv run python -c "
+import asyncio
+from servers.db_server.maintenance import vacuum_database
+asyncio.run(vacuum_database('/data/mcp_servers.db'))
+"
+
+# Analyze database
+uv run python -c "
+import asyncio
+from servers.db_server.maintenance import analyze_database
+asyncio.run(analyze_database('/data/mcp_servers.db'))
+"
+```
+
+### System Resource Optimization
+
+```bash
+# Monitor resource usage
+htop
+
+# Check memory usage
+free -h
+
+# Check disk usage
+df -h
+
+# Check I/O usage
+iotop
+```
+
+## Scaling Considerations
+
+### Horizontal Scaling
+
+```bash
+# Multiple instances with load balancer
+# Instance 1: Port 8001
+# Instance 2: Port 8002
+# Load balancer: Port 8000
+
+# Update configuration for each instance
+sed -i 's/port = 8000/port = 8001/' config-instance1.toml
+sed -i 's/port = 8000/port = 8002/' config-instance2.toml
+```
+
+### Database Scaling
+
+```bash
+# Read replicas for database
+# Primary: /data/primary.db
+# Replica: /data/replica.db
+
+# Setup replication (for more advanced databases)
+# This is a placeholder for future PostgreSQL/MySQL implementation
+```
+
+## Maintenance Schedule
+
+### Daily Tasks
+- [ ] Check service status
+- [ ] Review error logs
+- [ ] Monitor resource usage
+- [ ] Verify backup completion
+
+### Weekly Tasks
+- [ ] Rotate logs
+- [ ] Update security patches
+- [ ] Review performance metrics
+- [ ] Test backup restoration
+
+### Monthly Tasks
+- [ ] Update dependencies
+- [ ] Review and update documentation
+- [ ] Perform security audit
+- [ ] Clean up old backups
+
+## Emergency Contacts
+
+```
+Primary: System Administrator
+Secondary: Development Team
+Emergency: On-call rotation
+```
+
+**Remember**: Always test deployment procedures in a staging environment before production deployment.

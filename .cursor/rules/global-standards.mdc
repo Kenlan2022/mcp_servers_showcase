@@ -1,0 +1,320 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+---
+type: always
+name: "Global MCP Standards"
+description: "Common standards for all MCP servers with incremental development approach"
+---
+
+# Global MCP Server Development Standards
+
+## Core Philosophy: Incremental Development
+
+**CRITICAL**: Never create multiple untested files at once. Follow the incremental approach:
+
+1. **Plan First**: Always create or update TODO/TASKS lists before coding
+2. **One Step at a Time**: Implement one feature/component at a time
+3. **Test Immediately**: Write and run tests for each component before moving to next
+4. **Document Progress**: Update TODO lists and add completion notes
+5. **Review Before Proceed**: Ensure current step works before starting next
+
+## Project Structure Requirements
+
+### Use UV for Development
+```bash
+# Project initialization
+uv init mcp-servers-project
+cd mcp-servers-project
+uv add mcp fastapi uvicorn pytest pytest-asyncio
+
+# Development dependencies
+uv add --dev black isort mypy flake8 pre-commit
+```
+
+### Task Management (MANDATORY)
+Before any coding, create/update:
+
+**TODO.md Example:**
+```markdown
+# TODO List
+
+## Current Sprint
+- [ ] Setup basic MCP server structure
+- [ ] Implement ping/pong handler
+- [ ] Add basic tool registration
+- [ ] Write unit tests for handlers
+
+## Completed
+- [x] Project initialization with UV
+- [x] Basic project structure setup
+
+## Blocked/Questions
+- [ ] Need to research MCP protocol version compatibility
+```
+
+**TASKS.md Example:**
+```markdown
+# Detailed Task Breakdown
+
+## Task: Setup Basic MCP Server Structure
+**Status**: In Progress
+**Priority**: High
+
+### Subtasks:
+1. [x] Create main.py with MCP server initialization
+2. [ ] Add configuration management
+3. [ ] Implement basic logging
+4. [ ] Add error handling middleware
+
+### Acceptance Criteria:
+- Server can start without errors
+- Basic logging is working
+- Configuration can be loaded from environment
+
+### Notes:
+- Using uvicorn for ASGI server
+- MCP protocol requires specific message format
+```
+
+## Development Workflow
+
+### Incremental Implementation Steps
+**Step 1: Always Plan**
+```python
+# Before implementing, add TODO comments
+# TODO: Implement MCP server initialization
+# TODO: Add message handler registration
+# TODO: Implement basic error handling
+```
+
+**Step 2: Implement Minimally**
+```python
+# Implement just enough to test one thing
+async def handle_ping(request: dict) -> dict:
+    """Handle ping request - simplest possible implementation"""
+    return {"type": "pong", "data": request.get("data", {})}
+```
+
+**Step 3: Test Immediately**
+```python
+# Write test before moving to next feature
+async def test_handle_ping():
+    request = {"type": "ping", "data": {"message": "test"}}
+    response = await handle_ping(request)
+    assert response["type"] == "pong"
+    assert response["data"]["message"] == "test"
+```
+
+**Step 4: Update Documentation**
+```markdown
+# Update TODO.md
+- [x] Implement basic ping/pong handler
+- [ ] Add tool registration system
+```
+
+## Code Quality Standards
+
+### Type Hints (Required)
+```python
+from typing import Dict, List, Optional, Union, Any
+from pydantic import BaseModel
+
+async def handle_request(
+    request: Dict[str, Any], 
+    context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """All functions must have complete type hints"""
+    pass
+```
+
+### Error Handling
+```python
+import logging
+from typing import Dict, Any
+
+logger = logging.getLogger(__name__)
+
+async def safe_handler(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Always implement proper error handling"""
+    try:
+        # Implementation
+        return {"status": "success", "data": result}
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        return {"status": "error", "error": str(e)}
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return {"status": "error", "error": "Internal server error"}
+```
+
+### Testing Requirements
+```python
+# tests/test_example.py
+import pytest
+from unittest.mock import Mock, patch
+
+class TestMCPServer:
+    """Each feature must have comprehensive tests"""
+    
+    @pytest.mark.asyncio
+    async def test_handler_success_case(self):
+        """Test the happy path"""
+        pass
+    
+    @pytest.mark.asyncio
+    async def test_handler_error_case(self):
+        """Test error handling"""
+        pass
+    
+    @pytest.mark.asyncio
+    async def test_handler_edge_cases(self):
+        """Test edge cases and boundary conditions"""
+        pass
+```
+
+## MCP Server Specific Standards
+
+### Message Handler Pattern
+```python
+from typing import Protocol, Dict, Any
+
+class MCPHandler(Protocol):
+    async def handle(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Standard MCP handler interface"""
+        pass
+
+class PingHandler:
+    async def handle(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Implement specific MCP message handling"""
+        return {"type": "pong", "data": request.get("data", {})}
+```
+
+### Tool Registration
+```python
+from dataclasses import dataclass
+from typing import List, Callable
+
+@dataclass
+class MCPTool:
+    name: str
+    description: str
+    handler: Callable
+    parameters: Dict[str, Any]
+
+class ToolRegistry:
+    def __init__(self):
+        self.tools: Dict[str, MCPTool] = {}
+    
+    def register(self, tool: MCPTool) -> None:
+        """Register a new MCP tool"""
+        self.tools[tool.name] = tool
+```
+
+## Development Guidelines
+
+### When Uncertain
+1. **Don't guess**: If unsure about MCP protocol details, research first
+2. **Ask for clarification**: Add questions to TODO.md
+3. **Use official docs**: Reference MCP specification
+4. **Test assumptions**: Create small test cases to verify understanding
+
+### Code Review Checklist
+Before considering any task "complete":
+- [ ] Code has type hints
+- [ ] Tests are written and passing
+- [ ] Documentation is updated
+- [ ] TODO.md is updated
+- [ ] No TODO comments remain in code
+- [ ] Error handling is implemented
+- [ ] Logging is appropriate
+
+### Performance Considerations
+```python
+# Use async/await properly
+async def efficient_handler(request: Dict[str, Any]) -> Dict[str, Any]:
+    # Use asyncio.gather for concurrent operations
+    results = await asyncio.gather(
+        fetch_data_1(),
+        fetch_data_2(),
+        return_exceptions=True
+    )
+    return process_results(results)
+```
+
+## Common Patterns and Best Practices
+
+### Configuration Management
+```python
+from pydantic import BaseSettings
+
+class Settings(BaseSettings):
+    """Use pydantic for configuration management"""
+    host: str = "localhost"
+    port: int = 8000
+    debug: bool = False
+    
+    class Config:
+        env_file = ".env"
+```
+
+### Logging Setup
+```python
+import logging
+import sys
+
+def setup_logging(level: str = "INFO") -> None:
+    """Setup structured logging"""
+    logging.basicConfig(
+        level=getattr(logging, level.upper()),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler("mcp_server.log")
+        ]
+    )
+```
+
+### Data Validation
+```python
+from pydantic import BaseModel, validator
+
+class MCPRequest(BaseModel):
+    """Always validate incoming data"""
+    type: str
+    data: Dict[str, Any]
+    
+    @validator('type')
+    def validate_type(cls, v):
+        allowed_types = ['ping', 'tool_call', 'resource_request']
+        if v not in allowed_types:
+            raise ValueError(f"Invalid type: {v}")
+        return v
+```
+
+## Mandatory Workflow Steps
+
+1. **Before starting any feature**:
+   - Update TODO.md with specific tasks
+   - Break down into TASKS.md if complex
+   - Estimate effort and dependencies
+
+2. **During implementation**:
+   - Write minimal viable code
+   - Test immediately
+   - Document any assumptions or questions
+
+3. **After each component**:
+   - Run full test suite
+   - Update documentation
+   - Mark tasks as complete
+   - Review code quality
+
+4. **Before moving to next feature**:
+   - Ensure current feature is fully working
+   - Clean up any temporary code
+   - Update project documentation
+
+**Remember**: The goal is sustainable, reliable development. Better to have fewer features that work perfectly than many features that are untested and unreliable.

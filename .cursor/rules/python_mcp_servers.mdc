@@ -1,0 +1,490 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Python MCP Servers Development Rules
+
+## 🚨 CRITICAL: Incremental Development Only
+
+**NEVER create multiple untested files in one go**. Follow this strict workflow:
+
+1. **Plan** → Update TODO.md with specific tasks
+2. **Implement** → One component at a time
+3. **Test** → Write and run tests immediately
+4. **Verify** → Ensure it works before next step
+5. **Document** → Update progress and notes
+
+## Project Structure
+
+```
+mcp-servers/
+├── .cursor/
+│   └── rules/          # Cursor rules
+├── servers/
+│   ├── file-server/    # File operations server
+│   └── db-server/      # Database operations server
+├── shared/
+│   └── common/         # Shared utilities
+├── tests/              # Test suites
+├── docs/               # Documentation
+├── TODO.md             # High-level tasks
+├── TASKS.md            # Detailed breakdown
+└── pyproject.toml      # UV project config
+```
+
+## UV Development Setup
+
+### Initial Setup
+```bash
+# Initialize with UV
+uv init mcp-servers
+cd mcp-servers
+
+# Add core dependencies
+uv add mcp fastapi uvicorn pydantic
+
+# Add development dependencies
+uv add --dev pytest pytest-asyncio black isort mypy ruff pre-commit
+
+# Install project in development mode
+uv pip install -e .
+```
+
+### pyproject.toml Template
+```toml
+[project]
+name = "mcp-servers"
+version = "0.1.0"
+description = "Python MCP servers collection"
+dependencies = [
+    "mcp>=0.1.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0.0",
+    "aiofiles>=23.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.0.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+```
+
+## Development Workflow
+
+### Step 1: Before Any Code
+Always create or update task management files:
+
+**TODO.md Template:**
+```markdown
+# MCP Servers TODO
+
+## Current Sprint: [Server Name]
+- [ ] Task 1: Brief description
+- [ ] Task 2: Brief description
+
+## Next Sprint
+- [ ] Future task 1
+- [ ] Future task 2
+
+## Completed ✅
+- [x] Project setup with UV
+- [x] Basic project structure
+
+## Blocked/Questions ❓
+- [ ] Question about MCP protocol
+- [ ] Need research on X
+```
+
+**TASKS.md Template:**
+```markdown
+# Detailed Task Breakdown
+
+## Task: [Current Task Name]
+**Status**: In Progress
+**Priority**: High
+**Server**: file-server / db-server
+
+### Subtasks:
+1. [x] Completed subtask
+2. [ ] Current subtask
+3. [ ] Future subtask
+
+### Acceptance Criteria:
+- [ ] Criteria 1
+- [ ] Criteria 2
+- [ ] All tests passing
+
+### Notes:
+- Important implementation details
+- Research findings
+- Decisions made
+
+### Testing Plan:
+- [ ] Unit tests written
+- [ ] Integration tests written
+- [ ] Manual testing completed
+```
+
+### Step 2: Implement One Thing
+```python
+# Example: Start with minimal implementation
+async def handle_ping() -> dict:
+    """Simplest possible implementation first"""
+    return {"status": "success", "message": "pong"}
+
+# TODO: Add error handling
+# TODO: Add logging
+# TODO: Add input validation
+```
+
+### Step 3: Test Immediately
+```python
+# tests/test_ping.py
+import pytest
+
+@pytest.mark.asyncio
+async def test_handle_ping():
+    """Test the minimal implementation"""
+    result = await handle_ping()
+    assert result["status"] == "success"
+    assert result["message"] == "pong"
+```
+
+### Step 4: Run Tests
+```bash
+# Always run tests before proceeding
+uv run pytest tests/test_ping.py -v
+```
+
+### Step 5: Only Then Enhance
+```python
+# Now add error handling, logging, etc.
+import logging
+
+logger = logging.getLogger(__name__)
+
+async def handle_ping() -> dict:
+    """Enhanced with error handling"""
+    try:
+        logger.info("Handling ping request")
+        return {"status": "success", "message": "pong"}
+    except Exception as e:
+        logger.error(f"Ping handler error: {e}")
+        return {"status": "error", "error": str(e)}
+```
+
+## MCP Server Standards
+
+### Base Server Structure
+```python
+from abc import ABC, abstractmethod
+from typing import Dict, Any, List
+import logging
+
+class MCPServer(ABC):
+    """Base class for all MCP servers"""
+    
+    def __init__(self, name: str):
+        self.name = name
+        self.logger = logging.getLogger(f"mcp.{name}")
+        self.tools: Dict[str, Any] = {}
+    
+    @abstractmethod
+    async def initialize(self) -> None:
+        """Initialize server resources"""
+        pass
+    
+    @abstractmethod
+    async def shutdown(self) -> None:
+        """Cleanup server resources"""
+        pass
+    
+    async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Standard request handling"""
+        try:
+            request_type = request.get("type")
+            if request_type not in self.tools:
+                raise ValueError(f"Unknown request type: {request_type}")
+            
+            handler = self.tools[request_type]
+            return await handler(request)
+            
+        except Exception as e:
+            self.logger.error(f"Request handling error: {e}")
+            return {"status": "error", "error": str(e)}
+```
+
+### Tool Registration Pattern
+```python
+from dataclasses import dataclass
+from typing import Callable, Dict, Any
+
+@dataclass
+class MCPTool:
+    """MCP tool definition"""
+    name: str
+    description: str
+    parameters: Dict[str, Any]
+    handler: Callable
+
+def register_tool(server: MCPServer, tool: MCPTool):
+    """Register a tool with the server"""
+    server.tools[tool.name] = tool.handler
+    server.logger.info(f"Registered tool: {tool.name}")
+```
+
+## Code Quality Requirements
+
+### Type Hints (Mandatory)
+```python
+from typing import Dict, List, Optional, Union, Any, Protocol
+
+# All functions must have complete type hints
+async def process_request(
+    request: Dict[str, Any],
+    context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Process MCP request with full type annotation"""
+    pass
+```
+
+### Error Handling Pattern
+```python
+import logging
+from enum import Enum
+
+class ErrorCode(Enum):
+    VALIDATION_ERROR = "validation_error"
+    PERMISSION_ERROR = "permission_error"
+    RESOURCE_ERROR = "resource_error"
+    INTERNAL_ERROR = "internal_error"
+
+async def safe_handler(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Standard error handling pattern"""
+    try:
+        # Validate input
+        validate_request(request)
+        
+        # Process request
+        result = await process_request(request)
+        
+        return {"status": "success", "data": result}
+        
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        return {
+            "status": "error", 
+            "error_code": ErrorCode.VALIDATION_ERROR.value,
+            "error": str(e)
+        }
+    except PermissionError as e:
+        logger.error(f"Permission error: {e}")
+        return {
+            "status": "error",
+            "error_code": ErrorCode.PERMISSION_ERROR.value,
+            "error": str(e)
+        }
+    except Exception as e:
+        logger.error(f"Internal error: {e}")
+        return {
+            "status": "error",
+            "error_code": ErrorCode.INTERNAL_ERROR.value,
+            "error": "Internal server error"
+        }
+```
+
+### Logging Configuration
+```python
+import logging
+import sys
+from datetime import datetime
+
+def setup_logging(server_name: str, level: str = "INFO") -> None:
+    """Setup structured logging for MCP server"""
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    
+    # File handler
+    file_handler = logging.FileHandler(f"{server_name}.log")
+    file_handler.setFormatter(formatter)
+    
+    # Setup logger
+    logger = logging.getLogger(f"mcp.{server_name}")
+    logger.setLevel(getattr(logging, level.upper()))
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+```
+
+## Testing Requirements
+
+### Test Structure
+```python
+# tests/conftest.py
+import pytest
+import asyncio
+from unittest.mock import Mock
+
+@pytest.fixture
+def mock_server():
+    """Mock MCP server for testing"""
+    server = Mock()
+    server.name = "test_server"
+    return server
+
+@pytest.fixture
+def sample_request():
+    """Sample MCP request for testing"""
+    return {
+        "type": "test_request",
+        "data": {"key": "value"}
+    }
+
+# tests/test_server.py
+import pytest
+from unittest.mock import AsyncMock, Mock
+
+@pytest.mark.asyncio
+async def test_server_initialization():
+    """Test server initialization"""
+    server = TestServer("test")
+    await server.initialize()
+    
+    assert server.name == "test"
+    assert len(server.tools) == 0
+
+@pytest.mark.asyncio
+async def test_request_handling_success():
+    """Test successful request handling"""
+    # Test implementation
+    pass
+
+@pytest.mark.asyncio
+async def test_request_handling_error():
+    """Test error handling"""
+    # Test implementation
+    pass
+```
+
+## Documentation Requirements
+
+### Code Documentation
+```python
+async def process_file(file_path: str, options: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process a file with given options.
+    
+    Args:
+        file_path: Path to the file to process
+        options: Processing options including:
+            - encoding: File encoding (default: utf-8)
+            - max_size: Maximum file size in bytes
+            - validate: Whether to validate file content
+    
+    Returns:
+        Dict containing:
+            - status: "success" or "error"
+            - data: Processed file data (if success)
+            - error: Error message (if error)
+    
+    Raises:
+        ValueError: If file_path is invalid
+        PermissionError: If file cannot be accessed
+    """
+    pass
+```
+
+## Performance Guidelines
+
+### Async Best Practices
+```python
+import asyncio
+from typing import List, Dict, Any
+
+async def process_multiple_requests(requests: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Process multiple requests concurrently"""
+    # Use asyncio.gather for concurrent processing
+    results = await asyncio.gather(
+        *[process_single_request(req) for req in requests],
+        return_exceptions=True
+    )
+    
+    # Handle results and exceptions
+    processed_results = []
+    for result in results:
+        if isinstance(result, Exception):
+            processed_results.append({
+                "status": "error",
+                "error": str(result)
+            })
+        else:
+            processed_results.append(result)
+    
+    return processed_results
+```
+
+## Mandatory Pre-commit Checks
+
+Before any commit, ensure:
+- [ ] All tests are passing
+- [ ] Code is formatted with black
+- [ ] Imports are sorted with isort
+- [ ] Type checking passes with mypy
+- [ ] Linting passes with ruff
+- [ ] TODO.md is updated
+- [ ] No TODO comments remain in code
+
+### Pre-commit Configuration
+```bash
+# Install pre-commit hooks
+uv run pre-commit install
+
+# Run manually
+uv run pre-commit run --all-files
+```
+
+## Final Reminders
+
+1. **One feature at a time** - Never work on multiple features simultaneously
+2. **Test before proceeding** - Each component must work before moving to next
+3. **Update documentation** - Keep TODO.md and TASKS.md current
+4. **Ask when uncertain** - Add questions to TODO.md rather than guessing
+5. **Use UV for everything** - Dependencies, running tests, formatting, etc.
+
+**Remember**: Quality over quantity. Better to have one working feature than five broken ones.

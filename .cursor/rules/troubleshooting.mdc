@@ -1,0 +1,569 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# MCP Server Troubleshooting Guide
+
+## Development Issues
+
+### UV and Dependencies
+
+**Problem**: `uv` command not found
+```bash
+# Solution: Install UV
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc
+```
+
+**Problem**: Package installation fails
+```bash
+# Check UV version
+uv --version
+
+# Clear cache and reinstall
+uv cache clean
+uv pip install --force-reinstall -r requirements.txt
+```
+
+**Problem**: Import errors during development
+```bash
+# Check Python path
+uv run python -c "import sys; print(sys.path)"
+
+# Install in development mode
+uv pip install -e .
+```
+
+### Testing Issues
+
+**Problem**: Tests fail with import errors
+```bash
+# Check test environment
+uv run python -m pytest --collect-only
+
+# Ensure test dependencies are installed
+uv add --dev pytest pytest-asyncio
+
+# Run tests with verbose output
+uv run pytest -v --tb=short
+```
+
+**Problem**: Async tests hang or fail
+```python
+# Common issue: Missing pytest-asyncio
+# Solution: Ensure all async tests use @pytest.mark.asyncio
+
+import pytest
+
+@pytest.mark.asyncio
+async def test_async_function():
+    # Your async test code here
+    pass
+```
+
+**Problem**: Database tests fail
+```bash
+# Check if test database is properly isolated
+uv run pytest tests/test_database.py -v -s
+
+# Use temp database for tests
+import tempfile
+import pytest
+
+@pytest.fixture
+def temp_db():
+    with tempfile.NamedTemporaryFile(suffix='.db') as f:
+        yield f.name
+```
+
+### Code Quality Issues
+
+**Problem**: Black formatting conflicts
+```bash
+# Fix formatting issues
+uv run black . --diff  # Preview changes
+uv run black .         # Apply changes
+```
+
+**Problem**: mypy type checking errors
+```bash
+# Check specific file
+uv run mypy servers/file_server/main.py
+
+# Common fixes:
+# 1. Add type hints
+# 2. Use typing imports
+# 3. Add # type: ignore comments for external libs
+```
+
+**Problem**: Import sorting issues
+```bash
+# Fix import order
+uv run isort . --diff  # Preview changes
+uv run isort .         # Apply changes
+```
+
+## Runtime Issues
+
+### Server Startup Problems
+
+**Problem**: Server won't start
+```bash
+# Check configuration
+uv run python -c "
+from servers.config import load_config
+try:
+    config = load_config()
+    print('Configuration loaded successfully')
+except Exception as e:
+    print(f'Configuration error: {e}')
+"
+
+# Check port availability
+netstat -tlnp | grep :8000
+lsof -i :8000
+
+# Check file permissions
+ls -la config.toml
+```
+
+**Problem**: Database connection fails
+```bash
+# Check database file exists and is readable
+ls -la /data/mcp_servers.db
+
+# Test database connection
+uv run python -c "
+import asyncio
+import aiosqlite
+async def test():
+    try:
+        async with aiosqlite.connect('/data/mcp_servers.db') as conn:
+            await conn.execute('SELECT 1')
+        print('Database connection successful')
+    except Exception as e:
+        print(f'Database error: {e}')
+asyncio.run(test())
+"
+
+# Check database integrity
+uv run python -c "
+import asyncio
+import aiosqlite
+async def check():
+    async with aiosqlite.connect('/data/mcp_servers.db') as conn:
+        await conn.execute('PRAGMA integrity_check')
+        result = await conn.fetchall()
+        print(result)
+asyncio.run(check())
+"
+```
+
+**Problem**: File server issues
+```bash
+# Check directory permissions
+ls -la /data/files
+
+# Test file operations
+touch /data/files/test.txt
+rm /data/files/test.txt
+
+# Check disk space
+df -h /data
+```
+
+### Performance Issues
+
+**Problem**: Server responds slowly
+```bash
+# Check resource usage
+top -p $(pgrep -f "python -m servers.main")
+htop
+
+# Check memory usage
+free -h
+cat /proc/meminfo
+
+# Check disk I/O
+iotop
+iostat -x 1
+```
+
+**Problem**: Database queries are slow
+```bash
+# Analyze specific query
+uv run python -c "
+import asyncio
+from servers.db_server.performance import analyze_query
+asyncio.run(analyze_query('SELECT * FROM your_table'))
+"
+
+# Check database size
+du -h /data/mcp_servers.db
+
+# Vacuum database
+uv run python -c "
+import asyncio
+from servers.db_server.maintenance import vacuum_database
+asyncio.run(vacuum_database())
+"
+```
+
+**Problem**: File operations are slow
+```bash
+# Check file system
+fsck /dev/your-disk
+
+# Check for large files
+find /data/files -type f -size +100M -exec ls -lh {} \;
+
+# Check directory structure
+find /data/files -type d | wc -l
+```
+
+### Memory Issues
+
+**Problem**: Memory leaks
+```bash
+# Monitor memory usage over time
+watch -n 1 'ps -p $(pgrep -f "python -m servers.main") -o pid,ppid,cmd,%mem,rss'
+
+# Use memory profiler
+uv add --dev memory-profiler
+uv run python -m memory_profiler servers/main.py
+```
+
+**Problem**: Out of memory errors
+```bash
+# Check system memory
+free -h
+cat /proc/meminfo
+
+# Check swap usage
+swapon -s
+
+# Monitor memory usage
+vmstat 1
+```
+
+## Deployment Issues
+
+### Service Management
+
+**Problem**: systemd service fails to start
+```bash
+# Check service status
+sudo systemctl status mcp-servers
+
+# Check logs
+sudo journalctl -u mcp-servers --no-pager -l
+
+# Check service file syntax
+sudo systemd-analyze verify /etc/systemd/system/mcp-servers.service
+
+# Reload service configuration
+sudo systemctl daemon-reload
+```
+
+**Problem**: Service starts but immediately stops
+```bash
+# Check service logs
+sudo journalctl -u mcp-servers -f
+
+# Run manually to see errors
+cd /opt/mcp-servers
+source .venv/bin/activate
+python -m servers.main
+
+# Check environment variables
+sudo systemctl show mcp-servers -p Environment
+```
+
+### Permission Issues
+
+**Problem**: Permission denied errors
+```bash
+# Check file ownership
+ls -la /data/
+ls -la /opt/mcp-servers/
+
+# Fix ownership
+sudo chown -R mcp-user:mcp-group /data/
+sudo chown -R mcp-user:mcp-group /opt/mcp-servers/
+
+# Check SELinux (if applicable)
+getenforce
+sestatus
+```
+
+**Problem**: Database permission issues
+```bash
+# Check database file permissions
+ls -la /data/mcp_servers.db
+
+# Fix database permissions
+chmod 660 /data/mcp_servers.db
+chown mcp-user:mcp-group /data/mcp_servers.db
+```
+
+### Network Issues
+
+**Problem**: Server not accessible
+```bash
+# Check if server is listening
+netstat -tlnp | grep :8000
+ss -tlnp | grep :8000
+
+# Check firewall
+sudo ufw status
+sudo iptables -L
+
+# Test local connectivity
+curl -v http://localhost:8000/health
+```
+
+**Problem**: SSL/TLS issues
+```bash
+# Check certificate
+openssl x509 -in /etc/ssl/certs/mcp-server.crt -text -noout
+
+# Test SSL connection
+openssl s_client -connect localhost:443
+
+# Check Nginx configuration
+sudo nginx -t
+sudo systemctl status nginx
+```
+
+## Debugging Techniques
+
+### Enable Debug Logging
+
+```python
+# In your code
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Or in configuration
+[logging]
+level = "DEBUG"
+```
+
+### Using Python Debugger
+
+```python
+# Add breakpoint in code
+import pdb; pdb.set_trace()
+
+# Or use modern debugger
+import ipdb; ipdb.set_trace()
+```
+
+### Remote Debugging
+
+```bash
+# Install remote debugging tools
+uv add --dev debugpy
+
+# Start server with debug mode
+uv run python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m servers.main
+```
+
+### Profiling
+
+```bash
+# CPU profiling
+uv add --dev py-spy
+py-spy record -o profile.svg -- python -m servers.main
+
+# Memory profiling
+uv add --dev memory-profiler
+uv run python -m memory_profiler servers/main.py
+```
+
+## Error Patterns and Solutions
+
+### Common Error Messages
+
+**Error**: `ModuleNotFoundError: No module named 'servers'`
+```bash
+# Solution: Install in development mode
+uv pip install -e .
+```
+
+**Error**: `sqlite3.OperationalError: database is locked`
+```bash
+# Solution: Check for other processes using the database
+lsof /data/mcp_servers.db
+fuser /data/mcp_servers.db
+
+# Or restart the service
+sudo systemctl restart mcp-servers
+```
+
+**Error**: `OSError: [Errno 98] Address already in use`
+```bash
+# Solution: Kill process using the port
+sudo lsof -i :8000
+sudo kill -9 <PID>
+
+# Or use different port
+export PORT=8001
+```
+
+**Error**: `PermissionError: [Errno 13] Permission denied`
+```bash
+# Solution: Check file permissions
+ls -la /data/files
+chmod 755 /data/files
+```
+
+### Database-Specific Issues
+
+**Error**: `sqlite3.DatabaseError: database disk image is malformed`
+```bash
+# Solution: Restore from backup
+cp /backups/db/latest/mcp_servers.db /data/mcp_servers.db
+
+# Or try to repair
+sqlite3 /data/mcp_servers.db ".recover" > recovered.sql
+```
+
+**Error**: `sqlite3.IntegrityError: UNIQUE constraint failed`
+```bash
+# Solution: Check data integrity
+uv run python -c "
+import asyncio
+from servers.db_server.maintenance import check_integrity
+asyncio.run(check_integrity())
+"
+```
+
+## Monitoring and Alerting
+
+### Log Analysis
+
+```bash
+# Find error patterns
+grep -i error /var/log/mcp-servers.log
+
+# Count error types
+grep -i error /var/log/mcp-servers.log | cut -d' ' -f4- | sort | uniq -c
+
+# Monitor log in real time
+tail -f /var/log/mcp-servers.log | grep -i error
+```
+
+### Performance Monitoring
+
+```bash
+# Create monitoring script
+cat > /usr/local/bin/monitor-mcp.sh << 'EOF'
+#!/bin/bash
+echo "=== MCP Server Health Check ==="
+echo "Service Status:"
+systemctl is-active mcp-servers
+
+echo "Resource Usage:"
+ps -p $(pgrep -f "python -m servers.main") -o pid,ppid,cmd,%cpu,%mem,rss
+
+echo "Database Size:"
+du -h /data/mcp_servers.db
+
+echo "File Server Usage:"
+df -h /data/files
+
+echo "Recent Errors:"
+grep -i error /var/log/mcp-servers.log | tail -5
+EOF
+
+chmod +x /usr/local/bin/monitor-mcp.sh
+```
+
+### Health Checks
+
+```bash
+# Create health check script
+cat > /usr/local/bin/health-check.sh << 'EOF'
+#!/bin/bash
+# Health check for MCP servers
+
+# Check HTTP response
+if curl -f -s http://localhost:8000/health > /dev/null; then
+    echo "HTTP: OK"
+else
+    echo "HTTP: FAIL"
+    exit 1
+fi
+
+# Check database
+if python3 -c "
+import asyncio
+import aiosqlite
+async def test():
+    async with aiosqlite.connect('/data/mcp_servers.db') as conn:
+        await conn.execute('SELECT 1')
+asyncio.run(test())
+" 2>/dev/null; then
+    echo "Database: OK"
+else
+    echo "Database: FAIL"
+    exit 1
+fi
+
+# Check file system
+if [ -w /data/files ]; then
+    echo "File System: OK"
+else
+    echo "File System: FAIL"
+    exit 1
+fi
+
+echo "All checks passed"
+EOF
+
+chmod +x /usr/local/bin/health-check.sh
+```
+
+## Getting Help
+
+### Information to Collect
+
+When asking for help, provide:
+
+1. **System Information**
+   ```bash
+   uname -a
+   python3 --version
+   uv --version
+   ```
+
+2. **Error Messages**
+   ```bash
+   # Full error traceback
+   sudo journalctl -u mcp-servers --no-pager -l
+   ```
+
+3. **Configuration**
+   ```bash
+   # Sanitized configuration (remove sensitive data)
+   cat config.toml | grep -v password | grep -v secret
+   ```
+
+4. **Resource Usage**
+   ```bash
+   free -h
+   df -h
+   ps aux | grep python
+   ```
+
+### Escalation Process
+
+1. **Check Documentation**: Review cursor rules and deployment guide
+2. **Search Logs**: Look for error patterns in logs
+3. **Check Known Issues**: Review troubleshooting guide
+4. **Contact Development Team**: Provide collected information
+5. **Emergency Escalation**: For production issues affecting users
+
+**Remember**: Always test fixes in a staging environment first!
